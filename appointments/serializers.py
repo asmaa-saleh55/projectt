@@ -13,7 +13,7 @@ class AppointmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Appointment
         fields = ['id', 'doctor', 'doctor_details', 'patient', 'patient_details', 
-                 'date', 'time_slot', 'appointment_time', 'status', 'symptoms', 
+                 'date', 'time_slot', 'appointment_time', 'status', 'hospital', 'symptoms', 
                  'diagnosis', 'prescription', 'created_at', 'updated_at']
         read_only_fields = ['appointment_time', 'status', 'diagnosis', 'prescription']
 

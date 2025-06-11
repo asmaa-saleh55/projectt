@@ -30,6 +30,7 @@ INSTALLED_APPS = [
     'users',
     'appointments',
     'chatbot',
+    'contact',
 ]
 
 MIDDLEWARE = [
@@ -68,9 +69,9 @@ ASGI_APPLICATION = 'drhelper.asgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'asm',
+        'NAME': 'drhelper1',
         'USER': 'postgres',
-        'PASSWORD': 'asm',
+        'PASSWORD': '552003',
         'HOST': 'localhost',
         'PORT': '5432',
     }

@@ -43,12 +43,32 @@ class AppointmentViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # Ensure hospital field is provided
+        if 'hospital' not in data:
+            return Response(
+                {'error': 'Hospital field is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         # Create the appointment
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
 
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['patch'])
+    def change_status(self, request, pk=None):
+        appointment = self.get_object()
+        new_status = request.data.get('status')
+        if new_status not in ['PENDING', 'CONFIRMED', 'COMPLETED', 'CANCELLED']:
+            return Response(
+                {'error': 'Invalid status'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        appointment.status = new_status
+        appointment.save()
+        return Response({'status': f'Appointment status changed to {new_status}'})
 
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):

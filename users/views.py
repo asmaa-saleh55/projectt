@@ -1,8 +1,9 @@
 from rest_framework import viewsets, status, generics
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView
 from django.contrib.auth import authenticate, get_user_model
 from django.core.mail import send_mail
 from django.conf import settings
@@ -11,7 +12,7 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from .models import User, Doctor, Patient, Message
 from appointments.models import Appointment, Review
 from chatbot.models import ChatbotQuery
-from .serializers import UserSerializer, DoctorSerializer, PatientSerializer, ChangePasswordSerializer, MessageSerializer
+from .serializers import UserSerializer, DoctorSerializer, PatientSerializer, ChangePasswordSerializer, MessageSerializer, CustomTokenObtainPairSerializer, UserBasicSerializer
 from appointments.serializers import AppointmentSerializer, ReviewSerializer
 import json
 from django.utils.decorators import method_decorator
@@ -20,151 +21,267 @@ from django.db.models import Q
 
 User = get_user_model()
 
-@api_view(['POST'])
-@permission_classes([AllowAny])
-@csrf_exempt
-def register_user(request):
-    data = request.data
-    
-    # Validate required fields
-    required_fields = ['first_name', 'last_name', 'email', 'password', 'role']
-    for field in required_fields:
-        if field not in data:
-            return Response(
-                {'error': f'{field} is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-    
-    # Check if user already exists
-    if User.objects.filter(email=data['email']).exists():
-        return Response(
-            {'error': 'User with this email already exists'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-    
-    # Validate role
-    if data['role'].upper() not in ['DOCTOR', 'PATIENT']:
-        return Response(
-            {'error': 'Invalid role. Must be either "doctor" or "patient"'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-    
-    # Validate doctor-specific fields if role is doctor
-    if data['role'].upper() == 'DOCTOR':
-        doctor_fields = ['specialization', 'experience_years', 'qualification', 
-                        'consultation_fee', 'available_days', 'available_times']
-        for field in doctor_fields:
-            if field not in data:
-                return Response(
-                    {'error': f'{field} is required for doctors'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-        
-        # Validate experience_years is a number
-        try:
-            experience_years = int(data['experience_years'])
-            if experience_years < 0:
-                raise ValueError
-        except ValueError:
-            return Response(
-                {'error': 'experience_years must be a positive number'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Validate consultation_fee is a number
-        try:
-            consultation_fee = float(data['consultation_fee'])
-            if consultation_fee < 0:
-                raise ValueError
-        except ValueError:
-            return Response(
-                {'error': 'consultation_fee must be a positive number'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Validate available_days and available_times are lists
-        if not isinstance(data['available_days'], list) or not isinstance(data['available_times'], list):
-            return Response(
-                {'error': 'available_days and available_times must be lists'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-    
-    # Validate patient-specific fields if role is patient
-    elif data['role'].upper() == 'PATIENT':
-        patient_fields = {
-            'date_of_birth': None,  # Optional
-            'blood_group': None,    # Optional
-            'medical_history': None # Optional
-        }
-        
-        # Extract patient fields if they exist
-        patient_data = {
-            field: data.get(field)
-            for field in patient_fields
-            if field in data
-        }
-    
+def get_tokens_for_user(user):
+    """
+    Generate JWT tokens for a user.
+    Returns a dictionary containing access and refresh tokens.
+    """
     try:
-        # Create user with email as username
-        user = User.objects.create_user(
-            username=data['email'],  # Use email as username
-            email=data['email'],
-            password=data['password'],
-            first_name=data['first_name'],
-            last_name=data['last_name'],
-            role=data['role'].upper()
-        )
-        
-        # Create doctor or patient profile
-        if user.role == 'DOCTOR':
-            doctor = Doctor.objects.create(
-                user=user,
-                specialization=data['specialization'],
-                experience_years=int(data['experience_years']),
-                qualification=data['qualification'],
-                consultation_fee=float(data['consultation_fee']),
-                available_days=data['available_days'],
-                available_times=data['available_times']
-            )
-            # Add doctor profile to response
-            doctor_serializer = DoctorSerializer(doctor)
-            profile_data = doctor_serializer.data
-        elif user.role == 'PATIENT':
-            patient = Patient.objects.create(
-                user=user,
-                date_of_birth=data.get('date_of_birth'),
-                blood_group=data.get('blood_group', ''),
-                medical_history=data.get('medical_history', '')
-            )
-            # Add patient profile to response
-            patient_serializer = PatientSerializer(patient)
-            profile_data = patient_serializer.data
-        
-        # Generate tokens
         refresh = RefreshToken.for_user(user)
-        
-        return Response({
-            'status': 'success',
-            'message': 'Registration successful',
-            'tokens': {
-                'refresh': str(refresh),
-                'access': str(refresh.access_token),
-            },
-            'user': {
-                'id': user.id,
-                'email': user.email,
-                'first_name': user.first_name,
-                'last_name': user.last_name,
-                'role': user.role,
-                'profile': profile_data
-            }
-        }, status=status.HTTP_201_CREATED)
-        
+        tokens = {
+            'access': str(refresh.access_token),
+            'refresh': str(refresh)
+        }
+        print("✅ Tokens generated successfully for user:", user.email)
+        return tokens
     except Exception as e:
-        return Response(
-            {'error': str(e)},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+        print(f"❌ Token generation failed for user {user.email}: {str(e)}")
+        return None
+
+class DoctorRegistrationView(APIView):
+    permission_classes = [AllowAny]
+    parser_classes = (MultiPartParser, FormParser, JSONParser)
+    
+    def post(self, request):
+        try:
+            print("📝 Doctor registration request received:", {
+                "full_name": request.data.get('full_name', ''),
+                "email": request.data.get('email'),
+                "has_license": bool(request.FILES.get('license'))
+            })
+            
+            # Extract data from request
+            full_name = request.data.get('full_name', '')
+            email = request.data.get('email')
+            password = request.data.get('password')
+            license_file = request.FILES.get('license')
+
+            # Create doctor data with nested user
+            doctor_data = {
+                'user': {
+                    'username': email,  # Use email as username
+                    'full_name': full_name,
+                    'email': email,
+                    'password': password
+                },
+                'license': license_file,
+                'specialization': 'General Medicine',  # Default value
+                'working_hours': '9am-5pm'  # Default value
+            }
+
+            # Validate and create doctor
+            serializer = DoctorSerializer(data=doctor_data)
+            if not serializer.is_valid():
+                print("❌ Doctor registration validation failed:", serializer.errors)
+                return Response({
+                    'status': 'error',
+                    'message': 'Invalid data provided',
+                    'errors': serializer.errors
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            doctor = serializer.save()
+            print("✅ Doctor created successfully:", doctor.user.email)
+            
+            # Generate tokens
+            tokens = get_tokens_for_user(doctor.user)
+            if not tokens:
+                print("❌ Failed to generate tokens for doctor:", doctor.user.email)
+                return Response({
+                    'status': 'error',
+                    'message': 'Failed to generate authentication tokens'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+            # Prepare response data
+            response_data = {
+                'status': 'success',
+                'message': 'User registered successfully',
+                'data': {
+                    'user': {
+                        'id': doctor.user.id,
+                        'username': doctor.user.username,
+                        'full_name': doctor.user.full_name,
+                        'email': doctor.user.email,
+                        'role': doctor.user.role
+                    },
+                    'tokens': tokens
+                }
+            }
+            
+            print("✅ Doctor registration successful:", {
+                "user": response_data['data']['user'],
+                "tokens": { "access": "***", "refresh": "***" }
+            })
+            return Response(response_data, status=status.HTTP_201_CREATED)
+            
+        except Exception as e:
+            print(f"❌ Doctor registration error: {str(e)}")
+            return Response({
+                'status': 'error',
+                'message': 'An error occurred during registration',
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class PatientRegistrationView(APIView):
+    permission_classes = [AllowAny]
+    parser_classes = (MultiPartParser, FormParser, JSONParser)
+    
+    def post(self, request):
+        try:
+            print("📝 Patient registration request received:", {
+                "full_name": request.data.get('full_name', ''),
+                "email": request.data.get('email')
+            })
+            
+            data = request.data
+            # Accept flat structure from frontend
+            full_name = data.get("full_name", "")
+            email = data.get("email")
+            password = data.get("password")
+            
+            user_data = {
+                "username": email,  # Use email as username
+                "full_name": full_name,
+                "email": email,
+                "password": password
+            }
+            patient_data = {"user": user_data}
+
+            serializer = PatientSerializer(data=patient_data)
+            if not serializer.is_valid():
+                print("❌ Patient registration validation failed:", serializer.errors)
+                return Response({
+                    "status": "error",
+                    "message": "Invalid data provided",
+                    "errors": serializer.errors
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            patient = serializer.save()
+            print("✅ Patient created successfully:", patient.user.email)
+            
+            # Generate tokens
+            tokens = get_tokens_for_user(patient.user)
+            if not tokens:
+                print("❌ Failed to generate tokens for patient:", patient.user.email)
+                return Response({
+                    'status': 'error',
+                    'message': 'Failed to generate authentication tokens'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+            # Prepare response data
+            response_data = {
+                "status": "success",
+                "message": "User registered successfully",
+                "data": {
+                    "user": {
+                        "id": patient.user.id,
+                        "username": patient.user.username,
+                        "full_name": patient.user.full_name,
+                        "email": patient.user.email,
+                        "role": patient.user.role
+                    },
+                    "tokens": tokens
+                }
+            }
+            
+            print("✅ Patient registration successful:", {
+                "user": response_data['data']['user'],
+                "tokens": { "access": "***", "refresh": "***" }
+            })
+            return Response(response_data, status=status.HTTP_201_CREATED)
+            
+        except Exception as e:
+            print(f"❌ Patient registration error: {str(e)}")
+            return Response({
+                "status": "error",
+                "message": "An error occurred during registration",
+                "error": str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class LoginView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        try:
+            email = request.data.get('email')
+            password = request.data.get('password')
+
+            if not email or not password:
+                return Response({
+                    'status': 'error',
+                    'message': 'Email and password are required',
+                    'errors': {
+                        'email': 'Email is required' if not email else None,
+                        'password': 'Password is required' if not password else None
+                    }
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            try:
+                user = User.objects.get(email=email)
+            except User.DoesNotExist:
+                return Response({
+                    'status': 'error',
+                    'message': 'Invalid credentials',
+                    'errors': {
+                        'email': 'No user found with this email'
+                    }
+                }, status=status.HTTP_401_UNAUTHORIZED)
+
+            if not user.check_password(password):
+                return Response({
+                    'status': 'error',
+                    'message': 'Invalid credentials',
+                    'errors': {
+                        'password': 'Invalid password'
+                    }
+                }, status=status.HTTP_401_UNAUTHORIZED)
+
+            # Generate tokens
+            refresh = RefreshToken.for_user(user)
+            
+            response_data = {
+                'status': 'success',
+                'message': 'Login successful',
+                'data': {
+                    'user': {
+                        'id': user.id,
+                        'username': user.username,
+                        'first_name': user.first_name,
+                        'last_name': user.last_name,
+                        'email': user.email,
+                        'role': user.role,
+                        'address': user.address,
+                        'about_me': user.about_me
+                    },
+                    'tokens': {
+                        'refresh': str(refresh),
+                        'access': str(refresh.access_token)
+                    }
+                }
+            }
+
+            # Add doctor-specific data if user is a doctor
+            if user.role == 'DOCTOR':
+                try:
+                    doctor = Doctor.objects.get(user=user)
+                    response_data['data']['doctor'] = {
+                        'id': doctor.id,
+                        'specialization': doctor.specialization,
+                        'working_hours': doctor.working_hours,
+                        'verification_status': doctor.verification_status
+                    }
+                except Doctor.DoesNotExist:
+                    pass
+
+            return Response(response_data, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response({
+                'status': 'error',
+                'message': 'An error occurred during login',
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @method_decorator(csrf_exempt, name='dispatch')
 class UserViewSet(viewsets.ModelViewSet):
@@ -274,6 +391,22 @@ class UserViewSet(viewsets.ModelViewSet):
         instance = self.get_object()
         self.perform_destroy(instance)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=False, methods=['get'], permission_classes=[IsAdminUser], url_path='admin-users')
+    def admin_users(self, request):
+        queryset = self.get_queryset()
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['put'], permission_classes=[IsAdminUser], url_path='admin-verify')
+    def admin_verify(self, request, pk=None):
+        try:
+            user = self.get_object()
+            user.is_active = True  # Assuming 'is_active' is used for verification
+            user.save()
+            return Response({'message': f'User {user.email} verified successfully.'})
+        except User.DoesNotExist:
+            return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
 
 @method_decorator(csrf_exempt, name='dispatch')
 class DoctorViewSet(viewsets.ModelViewSet):

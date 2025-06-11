@@ -16,6 +16,7 @@ urlpatterns = [
     path('api/', include('users.urls')),
     path('api/appointments/', include('appointments.urls')),
     path('api/chatbot/', include('chatbot.urls')),
+    path('api/', include('contact.urls')),
 
     # ✅ Endpoints لتسجيل الدخول وتحديث التوكن:
     path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),

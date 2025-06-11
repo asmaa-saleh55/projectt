@@ -1,10 +1,28 @@
 from rest_framework import serializers
 from django.contrib.auth.password_validation import validate_password
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from .models import User, Doctor, Patient, Message
+from .models import User, Doctor, Patient, Message, Hospital
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     username_field = User.EMAIL_FIELD
+
+class UserBasicSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ('id', 'username', 'email', 'full_name', 'role')
+        extra_kwargs = {
+            'password': {'write_only': True},
+            'full_name': {'required': True}
+        }
+
+    def create(self, validated_data):
+        user = User.objects.create_user(
+            username=validated_data['username'],
+            email=validated_data['email'],
+            full_name=validated_data['full_name'],
+            password=validated_data['password']
+        )
+        return user
 
 class UserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
@@ -16,13 +34,13 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('id', 'username', 'email', 'password', 'confirm_password', 
-                 'first_name', 'last_name', 'role', 'phone', 'address', 'is_superuser', 'is_staff',
+        fields = ('id', 'username', 'email', 'full_name', 'role', 'phone', 'address', 'is_superuser', 'is_staff',
                  'doctor_profile', 'patient_profile')
         extra_kwargs = {
-            'first_name': {'required': True},
-            'last_name': {'required': True},
-            'email': {'required': True}
+            'full_name': {'required': True},
+            'email': {'required': True},
+            'password': {'write_only': True, 'required': True},
+            'confirm_password': {'write_only': True, 'required': True}
         }
 
     def get_doctor_profile(self, obj):
@@ -41,26 +59,46 @@ class UserSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
+        validated_data.pop('confirm_password')
+        role = validated_data.pop('role')
+        password = validated_data.pop('password')
+
         user = User.objects.create(
-            username=validated_data['username'],
-            email=validated_data['email'],
-            first_name=validated_data['first_name'],
-            last_name=validated_data['last_name'],
-            role=validated_data['role'],
-            phone=validated_data.get('phone', ''),
-            address=validated_data.get('address', '')
+            **validated_data
         )
-        user.set_password(validated_data['password'])
+        user.set_password(password)
+        user.role = role # Assign role after setting password if it's part of initial user creation
         user.save()
+
+        if role == 'DOCTOR':
+            Doctor.objects.create(user=user)
+        elif role == 'PATIENT':
+            Patient.objects.create(user=user)
+            
         return user
 
     def update(self, instance, validated_data):
         password = validated_data.pop('password', None)
+        confirm_password = validated_data.pop('confirm_password', None)
+        role = validated_data.pop('role', None)
+
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
-        if password:
+
+        if password and confirm_password and password == confirm_password:
             instance.set_password(password)
+        
+        if role:
+            instance.role = role
+
         instance.save()
+
+        # Handle doctor/patient profile creation if role changes
+        if role and not hasattr(instance, 'doctor_profile') and role == 'DOCTOR':
+            Doctor.objects.create(user=instance)
+        elif role and not hasattr(instance, 'patient_profile') and role == 'PATIENT':
+            Patient.objects.create(user=instance)
+
         return instance
 
 class ChangePasswordSerializer(serializers.Serializer):
@@ -73,88 +111,73 @@ class ChangePasswordSerializer(serializers.Serializer):
             raise serializers.ValidationError({"new_password": "Password fields didn't match."})
         return attrs
 
-class UserBasicSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = User
-        fields = ('id', 'email', 'first_name', 'last_name', 'phone')
-
 class DoctorBasicSerializer(serializers.ModelSerializer):
     class Meta:
         model = Doctor
-        fields = ('id', 'specialization', 'experience_years', 'qualification', 'consultation_fee', 'available_days', 'available_times')
+        fields = ('id', 'specialty', 'medical_license', 'working_hours', 'certificates', 'about_me', 'education', 'experience', 'consultation_fee', 'rating', 'total_ratings', 'available_days', 'available_times')
 
 class PatientBasicSerializer(serializers.ModelSerializer):
     class Meta:
         model = Patient
-        fields = ('id', 'date_of_birth', 'blood_group', 'medical_history')
+        fields = ('id', 'age', 'gender', 'date_of_birth', 'blood_group', 'medical_history')
 
 class DoctorSerializer(serializers.ModelSerializer):
-    user = UserBasicSerializer(read_only=True)
-    
+    user = UserBasicSerializer()
+    license = serializers.FileField(
+        required=True,
+        error_messages={
+            'required': 'Medical license is required'
+        }
+    )
+    specialization = serializers.CharField(required=False, default='General Medicine')
+    working_hours = serializers.CharField(required=False, default='9am-5pm')
+    certificates = serializers.FileField(required=False, allow_null=True)
+
     class Meta:
         model = Doctor
-        fields = '__all__'
+        fields = ('id', 'user', 'license', 'specialization', 'working_hours', 'certificates', 'verification_status')
+        read_only_fields = ('id', 'verification_status')
 
     def create(self, validated_data):
-        user_data = self.initial_data.get('user')
-        if user_data:
-            user = User.objects.create_user(
-                username=user_data['email'],
-                email=user_data['email'],
-                password=user_data['password'],
-                first_name=user_data['first_name'],
-                last_name=user_data['last_name'],
-                role='DOCTOR'
-            )
-            validated_data['user'] = user
-        return super().create(validated_data)
-
-    def update(self, instance, validated_data):
-        user_data = self.initial_data.get('user')
-        if user_data:
-            user = instance.user
-            for attr, value in user_data.items():
-                if attr != 'password':
-                    setattr(user, attr, value)
-            if 'password' in user_data:
-                user.set_password(user_data['password'])
-            user.save()
-        return super().update(instance, validated_data)
+        user_data = validated_data.pop('user')
+        user_serializer = UserBasicSerializer(data=user_data)
+        if not user_serializer.is_valid():
+            raise serializers.ValidationError(user_serializer.errors)
+        
+        user = user_serializer.save()
+        user.role = 'DOCTOR'
+        user.save()
+        
+        doctor = Doctor.objects.create(user=user, **validated_data)
+        return doctor
 
 class PatientSerializer(serializers.ModelSerializer):
-    user = UserBasicSerializer(read_only=True)
-    
+    user = UserBasicSerializer()
+
     class Meta:
         model = Patient
-        fields = '__all__'
+        fields = ('id', 'user')
+        read_only_fields = ('id',)
 
     def create(self, validated_data):
-        user_data = self.initial_data.get('user')
-        if user_data:
-            user = User.objects.create_user(
-                username=user_data['email'],
-                email=user_data['email'],
-                password=user_data['password'],
-                first_name=user_data['first_name'],
-                last_name=user_data['last_name'],
-                role='PATIENT'
-            )
-            validated_data['user'] = user
-        return super().create(validated_data)
-
-    def update(self, instance, validated_data):
-        user_data = self.initial_data.get('user')
-        if user_data:
-            user = instance.user
-            for attr, value in user_data.items():
-                if attr != 'password':
-                    setattr(user, attr, value)
-            if 'password' in user_data:
-                user.set_password(user_data['password'])
-            user.save()
-        return super().update(instance, validated_data)
+        user_data = validated_data.pop('user')
+        user_serializer = UserBasicSerializer(data=user_data)
+        if not user_serializer.is_valid():
+            raise serializers.ValidationError(user_serializer.errors)
+        
+        user = user_serializer.save()
+        user.role = 'PATIENT'
+        user.save()
+        
+        patient = Patient.objects.create(user=user)
+        return patient
 
 class MessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = Message
         fields = '__all__'
+
+class HospitalSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Hospital
+        fields = ('id', 'name', 'address')

@@ -14,6 +14,7 @@ class Appointment(models.Model):
     appointment_date = models.DateField()
     appointment_time = models.TimeField()
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='PENDING')
+    hospital = models.CharField(max_length=255, blank=True)
     symptoms = models.TextField(blank=True)
     diagnosis = models.TextField(blank=True)
     prescription = models.TextField(blank=True)

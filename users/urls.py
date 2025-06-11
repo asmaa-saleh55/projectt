@@ -2,7 +2,8 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
     LogoutView, ChatbotAskView, AdminStatsView, DoctorPerformanceView,
-    AppointmentViewSet, ReviewViewSet, MessageViewSet, DoctorViewSet, UserViewSet, PatientViewSet, register_user, get_user_profile
+    AppointmentViewSet, ReviewViewSet, MessageViewSet, DoctorViewSet, UserViewSet, PatientViewSet,
+    DoctorRegistrationView, PatientRegistrationView, LoginView
 )
 
 router = DefaultRouter()
@@ -14,9 +15,9 @@ router.register(r'reviews', ReviewViewSet, basename='review')
 router.register(r'messages', MessageViewSet, basename='message')
 
 urlpatterns = [
-    path('register', register_user, name='register'),
-    path('me/', get_user_profile, name='user-profile'),
-    path('users/me/', get_user_profile, name='user-profile-alias'),
+    path('register/patient/', PatientRegistrationView.as_view(), name='register-patient'),
+    path('register/doctor/', DoctorRegistrationView.as_view(), name='register-doctor'),
+    path('login/', LoginView.as_view(), name='login'),
     path('logout/', LogoutView.as_view(), name='logout'),
     path('chatbot/ask/', ChatbotAskView.as_view(), name='chatbot-ask'),
     path('admin/stats/', AdminStatsView.as_view(), name='admin-stats'),
